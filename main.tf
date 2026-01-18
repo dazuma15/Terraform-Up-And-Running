@@ -21,6 +21,13 @@ resource "aws_security_group" "instance" {
     protocol = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 resource "aws_security_group" "alb" {
@@ -41,24 +48,32 @@ resource "aws_security_group" "alb" {
   }
 }
 
-resource "aws_launch_configuration" "example" {
+resource "aws_launch_template" "example" {
+  name_prefix = "example-launch-template-"
   image_id = "ami-0fb653ca2d3203ac1"
   instance_type = "t2.micro"
-  security_groups = [aws_security_group.instance.id]
+  vpc_security_group_ids = [aws_security_group.instance.id]
 
-  user_data = <<-EOF
-              #!/bin/bash
-              echo "Hello, World" > index.html
-              nohup busybox httpd -f -p ${var.server_port} &
-              EOF
+  user_data = base64encode(<<EOF
+#!/bin/bash
+echo "Hello, World" > index.html
+nohup busybox httpd -f -p ${var.server_port} &
+EOF
+  )
 
   lifecycle {
     create_before_destroy = true
   }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "ASG-Instance"
+    }
+  }
 }
 
 resource "aws_autoscaling_group" "example" {
-  launch_configuration = aws_launch_configuration.example.name
   vpc_zone_identifier = data.aws_subnets.default.ids
 
   target_group_arns = [aws_lb_target_group.asg.arn]
@@ -66,6 +81,18 @@ resource "aws_autoscaling_group" "example" {
 
   min_size = 2
   max_size = 10
+
+  launch_template {
+    id = aws_launch_template.example.id
+    version = "$Latest"
+  }
+
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 90
+    }
+  }
 
   tag {
     key = "Name"
